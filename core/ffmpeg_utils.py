@@ -1,4 +1,5 @@
-﻿import os
+import os
+import sys
 import shutil
 import subprocess
 import re
@@ -10,7 +11,23 @@ def get_ffmpeg_path() -> str:
     if _CACHED_FFMPEG_PATH and os.path.exists(_CACHED_FFMPEG_PATH):
         return _CACHED_FFMPEG_PATH
 
-    # Check system PATH first
+    # Check if bundled inside PyInstaller executable or in app folder
+    if getattr(sys, 'frozen', False):
+        search_dirs = [
+            getattr(sys, '_MEIPASS', ''),
+            os.path.dirname(sys.executable),
+            os.path.join(os.path.dirname(sys.executable), 'binaries'),
+            os.path.join(getattr(sys, '_MEIPASS', ''), 'imageio_ffmpeg', 'binaries')
+        ]
+        for base in search_dirs:
+            if base and os.path.exists(base):
+                for root, _, files in os.walk(base):
+                    for f in files:
+                        if f.lower().startswith('ffmpeg') and f.lower().endswith('.exe'):
+                            _CACHED_FFMPEG_PATH = os.path.join(root, f)
+                            return _CACHED_FFMPEG_PATH
+
+    # Check system PATH
     system_ffmpeg = shutil.which("ffmpeg")
     if system_ffmpeg:
         _CACHED_FFMPEG_PATH = system_ffmpeg
