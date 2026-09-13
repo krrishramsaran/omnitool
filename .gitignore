@@ -1,0 +1,15 @@
+﻿__pycache__/
+*.py[cod]
+*.class
+*.log
+.venv/
+venv/
+env/
+dist/
+build/
+*.spec
+.u2net/
+OmniTool_Output/
+Desktop/OmniTool_Output/
+.vscode/
+.idea/
