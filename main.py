@@ -163,7 +163,7 @@ class OmniToolApp(ctk.CTk):
         if not d_url:
             messagebox.showerror('Update Error', 'Download link could not be found for the release.')
             return
-        UpdateProgressDialog(self, d_url, info.get('latest_version', 'Update'))
+        UpdateProgressDialog(self, d_url, info.get('latest_version', 'Update'), github_token=info.get('token'))
 
     def _toggle_theme(self):
         if self.theme_btn.get():

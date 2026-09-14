@@ -51,7 +51,10 @@ def check_for_updates(github_token: str = None) -> dict:
             for asset in data.get('assets', []):
                 name = asset.get('name', '').lower()
                 if 'windows' in name and name.endswith('.zip'):
-                    download_url = asset.get('browser_download_url')
+                    if github_token and asset.get('url'):
+                        download_url = asset.get('url')
+                    else:
+                        download_url = asset.get('browser_download_url')
                     break
 
             return {
@@ -59,7 +62,8 @@ def check_for_updates(github_token: str = None) -> dict:
                 'current_version': CURRENT_VERSION,
                 'latest_version': tag,
                 'download_url': download_url,
-                'release_notes': data.get('body', '')
+                'release_notes': data.get('body', ''),
+                'token': github_token
             }
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -68,7 +72,7 @@ def check_for_updates(github_token: str = None) -> dict:
     except Exception as e:
         return {'error': str(e), 'has_update': False}
 
-def download_and_install_update(download_url: str, progress_callback=None):
+def download_and_install_update(download_url: str, progress_callback=None, github_token: str = None):
     '''
     Downloads update zip to temp folder and executes apply_update script.
     '''
@@ -77,6 +81,9 @@ def download_and_install_update(download_url: str, progress_callback=None):
 
     req = urllib.request.Request(download_url)
     req.add_header('User-Agent', 'OmniTool-Desktop-App')
+    if github_token:
+        req.add_header('Authorization', f'token {github_token}')
+        req.add_header('Accept', 'application/octet-stream')
 
     with urllib.request.urlopen(req) as resp:
         total_size = int(resp.headers.get('Content-Length', 0))

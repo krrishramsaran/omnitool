@@ -1,16 +1,17 @@
-﻿import threading
+import threading
 from tkinter import messagebox
 import customtkinter as ctk
 from core.updater import download_and_install_update
 
 class UpdateProgressDialog(ctk.CTkToplevel):
-    def __init__(self, parent, download_url: str, version_tag: str):
+    def __init__(self, parent, download_url: str, version_tag: str, github_token: str = None):
         super().__init__(parent)
         self.title(f'Updating OmniTool to {version_tag}')
         self.geometry('420x220')
         self.resizable(False, False)
         self.download_url = download_url
         self.version_tag = version_tag
+        self.github_token = github_token
 
         self.lift()
         self.attributes('-topmost', True)
@@ -47,7 +48,7 @@ class UpdateProgressDialog(ctk.CTkToplevel):
                 self.status_lbl.configure(text=f'Downloading: {int(pct * 100)}%')
 
             self.status_lbl.configure(text='Downloading update archive...')
-            download_and_install_update(self.download_url, progress_callback=on_progress)
+            download_and_install_update(self.download_url, progress_callback=on_progress, github_token=self.github_token)
         except Exception as e:
             self.status_lbl.configure(text=f'Update failed: {str(e)}')
             messagebox.showerror('Update Failed', f'Could not complete auto-update:\n{str(e)}')
