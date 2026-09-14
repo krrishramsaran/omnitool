@@ -205,18 +205,30 @@ class VideoTab:
         ctk.CTkLabel(ctrl_row, text='Hotkeys: Space=Play/Pause, ←/→=Seek, I/O=In/Out', text_color='gray', font=ctk.CTkFont(size=10)).pack(side='right', padx=10)
 
     def _bind_keyboard_shortcuts(self):
+        def _guarded(action):
+            def handler(e):
+                try:
+                    if hasattr(self.app, 'tabview') and self.app.tabview.get() == '🎬 Video & Audio':
+                        focused = self.app.focus_get()
+                        if focused and ('entry' in str(type(focused)).lower() or 'text' in str(type(focused)).lower()):
+                            return
+                        action()
+                except Exception:
+                    pass
+            return handler
+
         try:
-            self.tab.bind_all('<space>', lambda e: self._toggle_playback())
-            self.tab.bind_all('<Left>', lambda e: self._step_back())
-            self.tab.bind_all('<Right>', lambda e: self._step_fwd())
-            self.tab.bind_all('<Shift-Left>', lambda e: self._step_back_5s())
-            self.tab.bind_all('<Shift-Right>', lambda e: self._step_fwd_5s())
-            self.tab.bind_all('<i>', lambda e: self._set_cut_start())
-            self.tab.bind_all('<I>', lambda e: self._set_cut_start())
-            self.tab.bind_all('<o>', lambda e: self._set_cut_end())
-            self.tab.bind_all('<O>', lambda e: self._set_cut_end())
-            self.tab.bind_all('<Home>', lambda e: self._seek_to(0.0))
-            self.tab.bind_all('<End>', lambda e: self._seek_to(self.video_duration))
+            self.app.bind_all('<space>', _guarded(self._toggle_playback))
+            self.app.bind_all('<Left>', _guarded(self._step_back))
+            self.app.bind_all('<Right>', _guarded(self._step_fwd))
+            self.app.bind_all('<Shift-Left>', _guarded(self._step_back_5s))
+            self.app.bind_all('<Shift-Right>', _guarded(self._step_fwd_5s))
+            self.app.bind_all('<i>', _guarded(self._set_cut_start))
+            self.app.bind_all('<I>', _guarded(self._set_cut_start))
+            self.app.bind_all('<o>', _guarded(self._set_cut_end))
+            self.app.bind_all('<O>', _guarded(self._set_cut_end))
+            self.app.bind_all('<Home>', _guarded(lambda: self._seek_to(0.0)))
+            self.app.bind_all('<End>', _guarded(lambda: self._seek_to(self.video_duration)))
         except Exception:
             pass
 

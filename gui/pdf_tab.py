@@ -289,8 +289,31 @@ class PDFTab:
         self.canvas.bind('<B3-Motion>', self._on_pan_drag)
 
         # Keyboard hotkeys for undo / redo
-        self.tab.bind_all('<Control-z>', lambda e: self._undo())
-        self.tab.bind_all('<Control-y>', lambda e: self._redo())
+        def _guarded_pdf_undo(e=None):
+            try:
+                if hasattr(self.app, 'tabview') and self.app.tabview.get() == '📄 PDF Tools':
+                    focused = self.app.focus_get()
+                    if focused and ('entry' in str(type(focused)).lower() or 'text' in str(type(focused)).lower()):
+                        return
+                    self._undo()
+            except Exception:
+                pass
+
+        def _guarded_pdf_redo(e=None):
+            try:
+                if hasattr(self.app, 'tabview') and self.app.tabview.get() == '📄 PDF Tools':
+                    focused = self.app.focus_get()
+                    if focused and ('entry' in str(type(focused)).lower() or 'text' in str(type(focused)).lower()):
+                        return
+                    self._redo()
+            except Exception:
+                pass
+
+        try:
+            self.app.bind_all('<Control-z>', _guarded_pdf_undo)
+            self.app.bind_all('<Control-y>', _guarded_pdf_redo)
+        except Exception:
+            pass
 
     # =========================================================================
     # SCROLLING, PANNING & ZOOMING VIEWPORT ENGINE
