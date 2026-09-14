@@ -90,3 +90,63 @@ def get_media_info(input_path: str) -> dict:
         info["bitrate"] = bitrate_match.group(1)
 
     return info
+
+_DETECTED_HW_INFO = None
+
+def detect_hw_encoder() -> dict:
+    '''
+    Detect working hardware-accelerated video encoders on this machine.
+    Tests actual encoding with a micro-frame so we only report true hardware capability.
+    '''
+    global _DETECTED_HW_INFO
+    if _DETECTED_HW_INFO is not None:
+        return _DETECTED_HW_INFO
+
+    ffmpeg_exe = get_ffmpeg_path()
+    candidates = [
+        ('h264_nvenc', 'NVIDIA NVENC (Fastest)'),
+        ('h264_qsv', 'Intel QuickSync'),
+        ('h264_amf', 'AMD AMF'),
+    ]
+    working = []
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+
+    for enc_name, label in candidates:
+        try:
+            cmd = [
+                ffmpeg_exe, '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.05',
+                '-c:v', enc_name, '-f', 'null', '-'
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags, timeout=3)
+            if res.returncode == 0:
+                working.append((enc_name, label))
+        except Exception:
+            continue
+
+    best = working[0][0] if working else 'libx264'
+    _DETECTED_HW_INFO = {
+        'best': best,
+        'available': working,
+        'has_hw': len(working) > 0,
+        'label': working[0][1] if working else 'CPU (libx264)'
+    }
+    return _DETECTED_HW_INFO
+
+def build_encode_args(encoder: str = 'auto', crf: int = 22) -> list[str]:
+    '''
+    Build optimal video encoding arguments with hardware acceleration when available.
+    '''
+    if encoder == 'auto':
+        hw = detect_hw_encoder()
+        encoder = hw['best']
+
+    if encoder == 'h264_nvenc':
+        qp = max(18, min(32, crf))
+        return ['-c:v', 'h264_nvenc', '-preset', 'p5', '-qp', str(qp)]
+    elif encoder == 'h264_qsv':
+        return ['-c:v', 'h264_qsv', '-preset', 'medium', '-global_quality', str(crf)]
+    elif encoder == 'h264_amf':
+        return ['-c:v', 'h264_amf', '-quality', 'balanced', '-qp_i', str(crf), '-qp_p', str(crf)]
+    else:
+        return ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf)]
+

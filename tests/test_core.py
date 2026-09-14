@@ -1,6 +1,8 @@
-﻿import os
+import os
+import sys
 import unittest
 import tempfile
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pymupdf
 from PIL import Image
 

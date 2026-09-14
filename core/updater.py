@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import urllib.request
@@ -6,7 +6,7 @@ import urllib.error
 import subprocess
 import tempfile
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.0"
 REPO_OWNER = "krrishramsaran"
 REPO_NAME = "omnitool"
 API_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"

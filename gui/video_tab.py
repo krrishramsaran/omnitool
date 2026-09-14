@@ -1,16 +1,18 @@
-﻿import os
+import os
 import time
 import threading
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, Canvas
 import customtkinter as ctk
 from PIL import Image
 
 from core.video_tools import (
     extract_video_frame, trim_video, merge_videos, merge_audios,
     replace_video_audio, video_to_gif, compress_video_target_size,
-    extract_audio, mute_video, change_video_speed, convert_video_format
+    extract_audio, mute_video, change_video_speed, convert_video_format,
+    add_fade, crossfade_videos, burn_subtitles, extract_audio_waveform,
+    COLOR_GRADE_PRESETS, apply_color_grade, render_clip_sequence
 )
-from core.ffmpeg_utils import get_media_info
+from core.ffmpeg_utils import get_media_info, detect_hw_encoder
 
 class VideoTab:
     def __init__(self, app, parent_tab):
@@ -26,7 +28,16 @@ class VideoTab:
         self.play_thread = None
         self.last_frame_tk = None
 
+        # Multi-clip sequence builder
+        self.sequence_clips = []
+
+        # Waveform and Hardware Acceleration State
+        self.waveform_data = []
+        self.hw_info = detect_hw_encoder()
+        self.sub_file_path = None
+
         self._setup_ui()
+        self._bind_keyboard_shortcuts()
 
     def _setup_ui(self):
         # Top Mode Switch
@@ -63,8 +74,8 @@ class VideoTab:
     # TIMELINE EDITOR & VIDEO PLAYER
     # =========================================================================
     def _setup_timeline_ui(self):
-        # Left Panel: File Info & Cut Actions
-        left_panel = ctk.CTkFrame(self.timeline_frame, width=280)
+        # Left Panel: Timeline Controls & Information
+        left_panel = ctk.CTkScrollableFrame(self.timeline_frame, width=280)
         left_panel.pack(side='left', fill='both', expand=False, padx=(5, 5), pady=5)
 
         ctk.CTkLabel(left_panel, text='Active Video', font=ctk.CTkFont(size=14, weight='bold')).pack(anchor='w', padx=10, pady=(10, 2))
@@ -73,21 +84,27 @@ class VideoTab:
         load_btn.pack(fill='x', padx=10, pady=5)
 
         self.vid_name_lbl = ctk.CTkLabel(left_panel, text='No video loaded', text_color='gray', font=ctk.CTkFont(size=11), wraplength=250)
-        self.vid_name_lbl.pack(anchor='w', padx=10, pady=(0, 10))
+        self.vid_name_lbl.pack(anchor='w', padx=10, pady=(0, 5))
 
         self.vid_info_lbl = ctk.CTkLabel(left_panel, text='Duration: 00:00 | Resolution: -', text_color='gray', font=ctk.CTkFont(size=11))
-        self.vid_info_lbl.pack(anchor='w', padx=10, pady=(0, 10))
+        self.vid_info_lbl.pack(anchor='w', padx=10, pady=(0, 4))
+
+        # Hardware acceleration badge
+        hw_label = f"🚀 {self.hw_info['label']}" if self.hw_info['has_hw'] else "🖥️ Engine: CPU (libx264)"
+        hw_col = "#70e090" if self.hw_info['has_hw'] else "gray"
+        self.hw_lbl = ctk.CTkLabel(left_panel, text=hw_label, text_color=hw_col, font=ctk.CTkFont(size=11, weight='bold'))
+        self.hw_lbl.pack(anchor='w', padx=10, pady=(0, 10))
 
         # Cut Marker Panel
         cut_card = ctk.CTkFrame(left_panel)
-        cut_card.pack(fill='x', padx=10, pady=10)
+        cut_card.pack(fill='x', padx=10, pady=6)
 
         ctk.CTkLabel(cut_card, text='Timeline Cut Markers', font=ctk.CTkFont(size=13, weight='bold')).pack(anchor='w', padx=10, pady=(8, 4))
         
         btn_row = ctk.CTkFrame(cut_card, fg_color='transparent')
         btn_row.pack(fill='x', padx=10, pady=5)
-        ctk.CTkButton(btn_row, text='[ Set Start (In)', width=110, command=self._set_cut_start).pack(side='left', padx=(0, 5))
-        ctk.CTkButton(btn_row, text='Set End (Out) ]', width=110, command=self._set_cut_end).pack(side='right')
+        ctk.CTkButton(btn_row, text='[ Set Start (I)', width=110, command=self._set_cut_start).pack(side='left', padx=(0, 5))
+        ctk.CTkButton(btn_row, text='Set End (O) ]', width=110, command=self._set_cut_end).pack(side='right')
 
         self.cut_summary_lbl = ctk.CTkLabel(
             cut_card,
@@ -95,18 +112,49 @@ class VideoTab:
             font=ctk.CTkFont(size=12, weight='bold'),
             text_color='#1f8b4c'
         )
-        self.cut_summary_lbl.pack(padx=10, pady=8)
+        self.cut_summary_lbl.pack(padx=10, pady=6)
 
         self.cut_btn = ctk.CTkButton(
             left_panel,
             text='✂️ Cut & Export Selected Clip',
-            height=40,
+            height=36,
             font=ctk.CTkFont(size=13, weight='bold'),
             fg_color='#1f8b4c',
             hover_color='#176d3b',
             command=self._export_cut_clip
         )
-        self.cut_btn.pack(fill='x', padx=10, pady=(10, 5))
+        self.cut_btn.pack(fill='x', padx=10, pady=(6, 6))
+
+        # Sequence Builder Card
+        seq_card = ctk.CTkFrame(left_panel)
+        seq_card.pack(fill='x', padx=10, pady=6)
+        ctk.CTkLabel(seq_card, text='🎬 Sequence Builder', font=ctk.CTkFont(size=13, weight='bold')).pack(anchor='w', padx=10, pady=(6, 2))
+
+        ctk.CTkButton(
+            seq_card,
+            text='+ Add Cut to Sequence',
+            fg_color='#2b5b84',
+            hover_color='#1f4463',
+            command=self._add_to_sequence
+        ).pack(fill='x', padx=10, pady=3)
+
+        self.seq_listbox = ctk.CTkTextbox(seq_card, height=90, state='disabled')
+        self.seq_listbox.pack(fill='x', padx=10, pady=4)
+
+        seq_btn_row = ctk.CTkFrame(seq_card, fg_color='transparent')
+        seq_btn_row.pack(fill='x', padx=10, pady=(2, 4))
+        ctk.CTkButton(seq_btn_row, text='▲', width=30, command=self._move_seq_up).pack(side='left', padx=1)
+        ctk.CTkButton(seq_btn_row, text='▼', width=30, command=self._move_seq_down).pack(side='left', padx=1)
+        ctk.CTkButton(seq_btn_row, text='Clear', width=55, fg_color='#6c757d', hover_color='#5a6268', command=self._clear_sequence).pack(side='left', padx=3)
+
+        self.render_seq_btn = ctk.CTkButton(
+            seq_card,
+            text='🎬 Stitch Sequence (0 clips)',
+            fg_color='#1f8b4c',
+            hover_color='#176d3b',
+            command=self._render_sequence
+        )
+        self.render_seq_btn.pack(fill='x', padx=10, pady=(4, 8))
 
         # Right Panel: Video Screen & Scrubber Bar
         screen_panel = ctk.CTkFrame(self.timeline_frame)
@@ -138,16 +186,39 @@ class VideoTab:
             command=self._on_timeline_drag
         )
         self.timeline_slider.set(0.0)
-        self.timeline_slider.pack(fill='x', padx=10, pady=5)
+        self.timeline_slider.pack(fill='x', padx=10, pady=(5, 2))
+
+        # Audio Waveform Canvas with Cut Overlay and Playhead
+        self.wave_canvas = Canvas(scrubber_box, height=45, bg='#12131c', highlightthickness=0)
+        self.wave_canvas.pack(fill='x', padx=10, pady=(0, 6))
+        self.wave_canvas.bind('<Button-1>', self._on_wave_click)
+        self.wave_canvas.bind('<B1-Motion>', self._on_wave_drag)
 
         # Controls row
         ctrl_row = ctk.CTkFrame(scrubber_box, fg_color='transparent')
         ctrl_row.pack(fill='x', padx=10, pady=(2, 8))
 
         ctk.CTkButton(ctrl_row, text='⏪ -1s', width=60, command=self._step_back).pack(side='left', padx=5)
-        self.play_btn = ctk.CTkButton(ctrl_row, text='▶ Play Preview', width=110, command=self._toggle_playback)
+        self.play_btn = ctk.CTkButton(ctrl_row, text='▶ Play Preview (Space)', width=140, command=self._toggle_playback)
         self.play_btn.pack(side='left', padx=5)
         ctk.CTkButton(ctrl_row, text='+1s ⏩', width=60, command=self._step_fwd).pack(side='left', padx=5)
+        ctk.CTkLabel(ctrl_row, text='Hotkeys: Space=Play/Pause, ←/→=Seek, I/O=In/Out', text_color='gray', font=ctk.CTkFont(size=10)).pack(side='right', padx=10)
+
+    def _bind_keyboard_shortcuts(self):
+        try:
+            self.tab.bind_all('<space>', lambda e: self._toggle_playback())
+            self.tab.bind_all('<Left>', lambda e: self._step_back())
+            self.tab.bind_all('<Right>', lambda e: self._step_fwd())
+            self.tab.bind_all('<Shift-Left>', lambda e: self._step_back_5s())
+            self.tab.bind_all('<Shift-Right>', lambda e: self._step_fwd_5s())
+            self.tab.bind_all('<i>', lambda e: self._set_cut_start())
+            self.tab.bind_all('<I>', lambda e: self._set_cut_start())
+            self.tab.bind_all('<o>', lambda e: self._set_cut_end())
+            self.tab.bind_all('<O>', lambda e: self._set_cut_end())
+            self.tab.bind_all('<Home>', lambda e: self._seek_to(0.0))
+            self.tab.bind_all('<End>', lambda e: self._seek_to(self.video_duration))
+        except Exception:
+            pass
 
     def _open_video_for_timeline(self):
         f = filedialog.askopenfilename(
@@ -171,6 +242,65 @@ class VideoTab:
             self._update_cut_labels()
             self._render_frame_at(0.0)
 
+            # Load audio waveform in background thread
+            def load_wave():
+                self.waveform_data = extract_audio_waveform(f, num_samples=300)
+                self.tab.after(0, self._draw_waveform)
+            threading.Thread(target=load_wave, daemon=True).start()
+
+    def _draw_waveform(self):
+        self.wave_canvas.delete('all')
+        w = max(100, self.wave_canvas.winfo_width())
+        h = max(20, self.wave_canvas.winfo_height())
+        mid = h // 2
+
+        # 1. Draw In/Out cut region highlight
+        if self.video_duration > 0:
+            x_in = max(0, int((self.cut_start / self.video_duration) * w))
+            x_out = min(w, int((self.cut_end / self.video_duration) * w))
+            if x_out > x_in:
+                self.wave_canvas.create_rectangle(x_in, 0, x_out, h, fill='#1b3d2b', outline='#2ecc71', width=1)
+                self.wave_canvas.create_line(x_in, 0, x_in, h, fill='#2ecc71', width=2)
+                self.wave_canvas.create_line(x_out, 0, x_out, h, fill='#2ecc71', width=2)
+
+        # 2. Draw amplitude waveform
+        if self.waveform_data:
+            n = len(self.waveform_data)
+            bar_w = max(1, w // n)
+            for i, amp in enumerate(self.waveform_data):
+                bx = int(i * w / n)
+                bar_h = max(1, int(amp * mid * 0.9))
+                self.wave_canvas.create_rectangle(
+                    bx, mid - bar_h, bx + bar_w, mid + bar_h,
+                    fill='#4fc3f7', outline=''
+                )
+        else:
+            self.wave_canvas.create_text(w // 2, mid, text='[ Loading Audio Waveform... ]', fill='#556', font=('Arial', 9))
+
+        # 3. Draw red playhead line
+        if self.video_duration > 0:
+            px = int((self.current_time / self.video_duration) * w)
+            self.wave_canvas.create_line(px, 0, px, h, fill='#ff4d4d', width=2)
+
+    def _on_wave_click(self, event):
+        if self.video_duration <= 0:
+            return
+        w = max(1, self.wave_canvas.winfo_width())
+        t = (event.x / w) * self.video_duration
+        self._seek_to(t)
+
+    def _on_wave_drag(self, event):
+        if self.video_duration <= 0:
+            return
+        w = max(1, self.wave_canvas.winfo_width())
+        t = (event.x / w) * self.video_duration
+        self._seek_to(t)
+
+    def _seek_to(self, timestamp: float):
+        self.current_time = max(0.0, min(self.video_duration, timestamp))
+        self.timeline_slider.set(self.current_time)
+        self._render_frame_at(self.current_time)
+
     def _format_time(self, seconds: float) -> str:
         m = int(seconds // 60)
         s = seconds % 60
@@ -181,26 +311,30 @@ class VideoTab:
         self._render_frame_at(self.current_time)
 
     def _step_back(self):
-        self.current_time = max(0.0, self.current_time - 1.0)
-        self.timeline_slider.set(self.current_time)
-        self._render_frame_at(self.current_time)
+        self._seek_to(self.current_time - 1.0)
 
     def _step_fwd(self):
-        self.current_time = min(self.video_duration, self.current_time + 1.0)
-        self.timeline_slider.set(self.current_time)
-        self._render_frame_at(self.current_time)
+        self._seek_to(self.current_time + 1.0)
+
+    def _step_back_5s(self):
+        self._seek_to(self.current_time - 5.0)
+
+    def _step_fwd_5s(self):
+        self._seek_to(self.current_time + 5.0)
 
     def _set_cut_start(self):
         self.cut_start = self.current_time
         if self.cut_end <= self.cut_start:
             self.cut_end = min(self.video_duration, self.cut_start + 5.0)
         self._update_cut_labels()
+        self._draw_waveform()
 
     def _set_cut_end(self):
         self.cut_end = self.current_time
         if self.cut_end <= self.cut_start:
             self.cut_start = max(0.0, self.cut_end - 5.0)
         self._update_cut_labels()
+        self._draw_waveform()
 
     def _update_cut_labels(self):
         dur = max(0.0, self.cut_end - self.cut_start)
@@ -260,6 +394,63 @@ class VideoTab:
         except Exception as e:
             messagebox.showerror('Trim Error', f'Failed to cut clip:\n{str(e)}')
 
+    def _add_to_sequence(self):
+        if not self.current_video:
+            messagebox.showwarning('No Video', 'Please load a video first.')
+            return
+        st = self.cut_start
+        en = self.cut_end if self.cut_end > self.cut_start else self.video_duration
+        self.sequence_clips.append({
+            'path': self.current_video,
+            'start': st,
+            'end': en
+        })
+        self._update_sequence_listbox()
+
+    def _move_seq_up(self):
+        if len(self.sequence_clips) >= 2:
+            self.sequence_clips[-1], self.sequence_clips[-2] = self.sequence_clips[-2], self.sequence_clips[-1]
+            self._update_sequence_listbox()
+
+    def _move_seq_down(self):
+        if len(self.sequence_clips) >= 2:
+            self.sequence_clips[0], self.sequence_clips[1] = self.sequence_clips[1], self.sequence_clips[0]
+            self._update_sequence_listbox()
+
+    def _clear_sequence(self):
+        self.sequence_clips.clear()
+        self._update_sequence_listbox()
+
+    def _update_sequence_listbox(self):
+        self.seq_listbox.configure(state='normal')
+        self.seq_listbox.delete('1.0', 'end')
+        total_dur = 0.0
+        for i, c in enumerate(self.sequence_clips):
+            dur = max(0.0, (c['end'] or 0.0) - (c['start'] or 0.0))
+            total_dur += dur
+            bname = os.path.basename(c['path'])
+            self.seq_listbox.insert('end', f'{i+1}. {bname} [{self._format_time(c["start"])}➔{self._format_time(c["end"])}]\n')
+        self.seq_listbox.configure(state='disabled')
+        self.render_seq_btn.configure(text=f'🎬 Stitch ({len(self.sequence_clips)} clips, {total_dur:.1f}s)')
+
+    def _render_sequence(self):
+        if not self.sequence_clips:
+            messagebox.showwarning('No Clips', 'Please add at least one clip to the sequence.')
+            return
+        out_dir = self.app.output_dir
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, f'sequence_stitch_{int(time.time())}.mp4')
+        def worker():
+            try:
+                self.render_seq_btn.configure(state='disabled', text='Rendering Sequence...')
+                render_clip_sequence(self.sequence_clips, out_file)
+                self.app.after(0, lambda: messagebox.showinfo('Sequence Saved', f'Stitched sequence saved to:\n{out_file}'))
+            except Exception as e:
+                self.app.after(0, lambda: messagebox.showerror('Render Error', f'Failed to render sequence:\n{str(e)}'))
+            finally:
+                self.app.after(0, lambda: self.render_seq_btn.configure(state='normal', text=f'🎬 Stitch ({len(self.sequence_clips)} clips)'))
+        threading.Thread(target=worker, daemon=True).start()
+
     # =========================================================================
     # BATCH & MERGE UTILITIES
     # =========================================================================
@@ -286,6 +477,9 @@ class VideoTab:
         ctk.CTkLabel(merge_box, text='Quick Merging', font=ctk.CTkFont(size=13, weight='bold')).pack(anchor='w', padx=10, pady=(8, 4))
         
         ctk.CTkButton(merge_box, text='🔗 Merge Selected Videos', fg_color='#2b5b84', hover_color='#1f4463', command=self._merge_all_videos).pack(fill='x', padx=10, pady=4)
+        self.crossfade_chk = ctk.CTkCheckBox(merge_box, text='Dissolve Crossfade (1s)')
+        self.crossfade_chk.pack(anchor='w', padx=10, pady=(0, 4))
+
         ctk.CTkButton(merge_box, text='🎵 Merge Selected Audios', fg_color='#2b5b84', hover_color='#1f4463', command=self._merge_all_audios).pack(fill='x', padx=10, pady=4)
         ctk.CTkButton(merge_box, text='🔊 Replace / Add Audio Track', fg_color='#2b5b84', hover_color='#1f4463', command=self._replace_audio_track).pack(fill='x', padx=10, pady=(4, 8))
 
@@ -299,8 +493,11 @@ class VideoTab:
 
         video_actions = [
             ('Convert Format (MP4, MKV, MOV, WEBM, MP3, WAV)', 'convert'),
+            ('Apply Cinematic Color Grading / LUT Preset', 'color_grade'),
             ('Video to Smooth GIF Maker (2-pass palette)', 'gif'),
             ('Target File Size Compressor (Discord 25MB, WhatsApp 16MB)', 'compress_size'),
+            ('Burn Subtitles (SRT/ASS) Permanently', 'subtitles'),
+            ('Add Fade In & Fade Out Transitions', 'fade'),
             ('Audio Extractor (Extract MP3/WAV from video)', 'audio_extract'),
             ('Mute Video (Strip audio track)', 'mute'),
             ('Video Speed Controller (0.5x, 1.25x, 1.5x, 2.0x)', 'speed')
@@ -313,7 +510,7 @@ class VideoTab:
                 variable=self.video_action,
                 value=val,
                 command=self._update_opts_ui
-            ).pack(anchor='w', padx=15, pady=4)
+            ).pack(anchor='w', padx=15, pady=3)
 
         self.video_opts_frame = ctk.CTkFrame(right_frame)
         self.video_opts_frame.pack(fill='x', padx=10, pady=15)
@@ -337,6 +534,12 @@ class VideoTab:
         )
         self.video_run_btn.pack(fill='x', padx=10, pady=10)
 
+    def _browse_subtitle_file(self):
+        f = filedialog.askopenfilename(title='Select Subtitle File', filetypes=[('Subtitle Files', '*.srt;*.ass')])
+        if f:
+            self.sub_file_path = f
+            self.sub_lbl.configure(text=os.path.basename(f), text_color='white')
+
     def _update_opts_ui(self):
         for w in self.video_opts_frame.winfo_children():
             w.destroy()
@@ -347,6 +550,11 @@ class VideoTab:
             self.vid_fmt_combo = ctk.CTkComboBox(self.video_opts_frame, values=['mp4', 'mkv', 'mov', 'webm', 'avi', 'mp3', 'wav'])
             self.vid_fmt_combo.set('mp4')
             self.vid_fmt_combo.pack(anchor='w', padx=10, pady=(0, 10))
+        elif act == 'color_grade':
+            ctk.CTkLabel(self.video_opts_frame, text='Cinematic Color Grading Preset:').pack(anchor='w', padx=10, pady=(10, 2))
+            self.color_grade_combo = ctk.CTkComboBox(self.video_opts_frame, values=list(COLOR_GRADE_PRESETS.keys()), width=260)
+            self.color_grade_combo.set('Cinematic Teal & Orange')
+            self.color_grade_combo.pack(anchor='w', padx=10, pady=(0, 10))
         elif act == 'gif':
             row = ctk.CTkFrame(self.video_opts_frame, fg_color='transparent')
             row.pack(fill='x', padx=10, pady=10)
@@ -364,6 +572,40 @@ class VideoTab:
             self.vid_target_mb = ctk.CTkComboBox(self.video_opts_frame, values=['25 MB (Discord Nitro-Free)', '16 MB (WhatsApp)', '10 MB (Email)', '50 MB', '100 MB'])
             self.vid_target_mb.set('25 MB (Discord Nitro-Free)')
             self.vid_target_mb.pack(anchor='w', padx=10, pady=(0, 10))
+        elif act == 'subtitles':
+            ctk.CTkLabel(self.video_opts_frame, text='Subtitle File (.srt or .ass):').pack(anchor='w', padx=10, pady=(10, 2))
+            btn_sub = ctk.CTkButton(self.video_opts_frame, text='Browse Subtitle File', command=self._browse_subtitle_file)
+            btn_sub.pack(anchor='w', padx=10, pady=3)
+            self.sub_lbl = ctk.CTkLabel(self.video_opts_frame, text=os.path.basename(self.sub_file_path) if self.sub_file_path else 'No subtitle selected', text_color='gray', font=ctk.CTkFont(size=11))
+            self.sub_lbl.pack(anchor='w', padx=10, pady=(0, 5))
+
+            row = ctk.CTkFrame(self.video_opts_frame, fg_color='transparent')
+            row.pack(fill='x', padx=10, pady=5)
+            ctk.CTkLabel(row, text='Font Size:').pack(side='left')
+            self.sub_fsize_combo = ctk.CTkComboBox(row, values=['18', '24', '32', '40'], width=75)
+            self.sub_fsize_combo.set('24')
+            self.sub_fsize_combo.pack(side='left', padx=5)
+
+            ctk.CTkLabel(row, text='Color:').pack(side='left', padx=(10, 0))
+            self.sub_col_combo = ctk.CTkComboBox(row, values=['White', 'Yellow', 'Cyan'], width=90)
+            self.sub_col_combo.set('White')
+            self.sub_col_combo.pack(side='left', padx=5)
+        elif act == 'fade':
+            row = ctk.CTkFrame(self.video_opts_frame, fg_color='transparent')
+            row.pack(fill='x', padx=10, pady=10)
+            ctk.CTkLabel(row, text='Fade In (s):').pack(side='left')
+            self.fade_in_entry = ctk.CTkEntry(row, width=65)
+            self.fade_in_entry.insert(0, '1.0')
+            self.fade_in_entry.pack(side='left', padx=5)
+
+            ctk.CTkLabel(row, text='Fade Out (s):').pack(side='left', padx=(15, 0))
+            self.fade_out_entry = ctk.CTkEntry(row, width=65)
+            self.fade_out_entry.insert(0, '1.0')
+            self.fade_out_entry.pack(side='left', padx=5)
+
+            self.fade_audio_chk = ctk.CTkCheckBox(self.video_opts_frame, text='Also fade audio in/out to silence')
+            self.fade_audio_chk.select()
+            self.fade_audio_chk.pack(anchor='w', padx=10, pady=(0, 10))
         elif act == 'audio_extract':
             ctk.CTkLabel(self.video_opts_frame, text='Audio Format:').pack(anchor='w', padx=10, pady=(10, 2))
             self.audio_fmt_combo = ctk.CTkComboBox(self.video_opts_frame, values=['mp3', 'wav', 'aac'])
@@ -407,11 +649,15 @@ class VideoTab:
         out_dir = self.app.output_dir
         os.makedirs(out_dir, exist_ok=True)
         out_f = os.path.join(out_dir, 'merged_video.mp4')
+        do_crossfade = bool(self.crossfade_chk.get())
 
         def worker():
             try:
                 self.video_status_lbl.configure(text='Merging videos...')
-                merge_videos(vids, out_f)
+                if do_crossfade and len(vids) == 2:
+                    crossfade_videos(vids[0], vids[1], out_f, duration=1.0)
+                else:
+                    merge_videos(vids, out_f)
                 self.video_status_lbl.configure(text='Videos merged successfully!')
                 messagebox.showinfo('Success', f'Merged videos saved to:\n{out_f}')
             except Exception as e:
@@ -487,6 +733,10 @@ class VideoTab:
                         extract_audio(f, out_file, audio_format=target_fmt)
                     else:
                         convert_video_format(f, out_file)
+                elif act == 'color_grade':
+                    grade_preset = self.color_grade_combo.get()
+                    out_file = os.path.join(out_dir, f'{bname}_graded.mp4')
+                    apply_color_grade(f, out_file, grade_preset)
                 elif act == 'gif':
                     fps = int(self.gif_fps_combo.get())
                     w = int(self.gif_w_combo.get())
@@ -497,6 +747,19 @@ class VideoTab:
                     mb_val = float(mb_text)
                     out_file = os.path.join(out_dir, f'{bname}_compressed.mp4')
                     compress_video_target_size(f, out_file, target_size_mb=mb_val)
+                elif act == 'subtitles':
+                    if not self.sub_file_path or not os.path.exists(self.sub_file_path):
+                        raise ValueError('Please select a valid .srt or .ass subtitle file.')
+                    fsz = int(self.sub_fsize_combo.get())
+                    col = self.sub_col_combo.get().lower()
+                    out_file = os.path.join(out_dir, f'{bname}_subtitled.mp4')
+                    burn_subtitles(f, self.sub_file_path, out_file, font_size=fsz, font_color=col)
+                elif act == 'fade':
+                    fin = float(self.fade_in_entry.get().strip() or '1.0')
+                    fout = float(self.fade_out_entry.get().strip() or '1.0')
+                    do_afade = bool(self.fade_audio_chk.get())
+                    out_file = os.path.join(out_dir, f'{bname}_faded.mp4')
+                    add_fade(f, out_file, fade_in=fin, fade_out=fout, audio_fade=do_afade)
                 elif act == 'audio_extract':
                     afmt = self.audio_fmt_combo.get().lower()
                     out_file = os.path.join(out_dir, f'{bname}.{afmt}')

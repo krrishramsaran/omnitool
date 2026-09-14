@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 *.log
@@ -13,3 +13,4 @@ OmniTool_Output/
 Desktop/OmniTool_Output/
 .vscode/
 .idea/
+*.zip

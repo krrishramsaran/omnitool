@@ -1,4 +1,4 @@
-﻿import os
+import os
 import io
 import subprocess
 import tempfile
@@ -229,3 +229,236 @@ def convert_video_format(input_path: str, output_path: str, resolution: str = No
     args.append(output_path)
     run_ffmpeg(args)
     return output_path
+
+def add_fade(input_path: str, output_path: str, fade_in: float = 1.0, fade_out: float = 1.0,
+             audio_fade: bool = True, fade_in_sec: float = None, fade_out_sec: float = None):
+    '''Add video and audio fade-in at the start and fade-out at the end.'''
+    if fade_in_sec is not None:
+        fade_in = fade_in_sec
+    if fade_out_sec is not None:
+        fade_out = fade_out_sec
+    info = get_media_info(input_path)
+    duration = info.get('duration', 0.0)
+    if duration <= 0:
+        raise ValueError('Cannot determine video duration for fade calculation.')
+
+    vf_filters = []
+    af_filters = []
+
+    if fade_in > 0:
+        vf_filters.append(f'fade=t=in:st=0:d={fade_in:.3f}')
+        if audio_fade:
+            af_filters.append(f'afade=t=in:st=0:d={fade_in:.3f}')
+
+    if fade_out > 0:
+        fo_start = max(0.0, duration - fade_out)
+        vf_filters.append(f'fade=t=out:st={fo_start:.3f}:d={fade_out:.3f}')
+        if audio_fade:
+            af_filters.append(f'afade=t=out:st={fo_start:.3f}:d={fade_out:.3f}')
+
+    args = ['-y', '-i', input_path]
+    if vf_filters:
+        args.extend(['-vf', ','.join(vf_filters)])
+    if af_filters:
+        args.extend(['-af', ','.join(af_filters)])
+
+    args.extend(['-c:v', 'libx264', '-crf', '22', '-c:a', 'aac', output_path])
+    run_ffmpeg(args)
+    return output_path
+
+def crossfade_videos(video1, video2=None, output_path: str = None, duration: float = 1.0, transition_duration: float = None):
+    '''Crossfade dissolve transition between two video clips. Accepts pair of paths or list of paths.'''
+    if transition_duration is not None:
+        duration = transition_duration
+
+    if isinstance(video1, (list, tuple)):
+        v_list = video1
+        if len(v_list) < 2:
+            raise ValueError('Crossfade requires at least 2 videos.')
+        out_path = video2
+        v1 = v_list[0]
+        v2 = v_list[1]
+    else:
+        v1 = video1
+        v2 = video2
+        out_path = output_path
+
+    info1 = get_media_info(v1)
+    dur1 = info1.get('duration', 0.0)
+    offset = max(0.0, dur1 - duration)
+
+    filter_complex = (
+        f'[0:v][1:v]xfade=transition=dissolve:duration={duration:.3f}:offset={offset:.3f}[outv];'
+        f'[0:a][1:a]acrossfade=d={duration:.3f}[outa]'
+    )
+    args = [
+        '-y',
+        '-i', v1,
+        '-i', v2,
+        '-filter_complex', filter_complex,
+        '-map', '[outv]',
+        '-map', '[outa]',
+        '-c:v', 'libx264',
+        '-crf', '22',
+        '-c:a', 'aac',
+        out_path
+    ]
+    run_ffmpeg(args)
+    return out_path
+
+def burn_subtitles(input_path: str, subtitle_path: str, output_path: str,
+                   font_size: int = 24, font_color: str = 'white',
+                   outline_color: str = 'black', outline_width: int = 2,
+                   position: str = 'bottom'):
+    '''Burn SRT or ASS subtitles permanently into video.'''
+    ext = os.path.splitext(subtitle_path)[1].lower()
+    sub_safe = subtitle_path.replace('\\', '/').replace(':', '\\:')
+
+    if ext == '.ass':
+        vf = f"ass='{sub_safe}'"
+    else:
+        margin_v = 20 if position == 'bottom' else 280
+        color_map = {
+            'white': 'FFFFFF', 'yellow': '00FFFF', 'black': '000000',
+            'red': '0000FF', 'green': '00FF00', 'cyan': 'FFFF00'
+        }
+        primary = color_map.get(font_color.lower(), 'FFFFFF')
+        outline = color_map.get(outline_color.lower(), '000000')
+        style = (
+            f"FontSize={font_size},"
+            f"PrimaryColour=&H00{primary},"
+            f"OutlineColour=&H00{outline},"
+            f"Outline={outline_width},"
+            f"MarginV={margin_v},"
+            f"Alignment=2"
+        )
+        vf = f"subtitles='{sub_safe}':force_style='{style}'"
+
+    args = [
+        '-y', '-i', input_path,
+        '-vf', vf,
+        '-c:v', 'libx264', '-crf', '22',
+        '-c:a', 'copy',
+        output_path
+    ]
+    run_ffmpeg(args)
+    return output_path
+
+def extract_audio_waveform(input_path: str, num_samples: int = 400, num_points: int = None) -> list[float]:
+    '''
+    Extract normalized audio amplitude data [0.0..1.0] for waveform display.
+    Uses FFmpeg to decode audio into mono raw 16-bit PCM.
+    '''
+    if num_points is not None:
+        num_samples = num_points
+    import struct
+    ffmpeg_exe = get_ffmpeg_path()
+    cmd = [
+        ffmpeg_exe, '-i', input_path,
+        '-vn',
+        '-ac', '1',
+        '-ar', '8000',
+        '-f', 's16le',
+        '-'
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
+
+    if p.returncode != 0 or not p.stdout:
+        return [0.0] * num_samples
+
+    raw = p.stdout
+    n_frames = len(raw) // 2
+    if n_frames == 0:
+        return [0.0] * num_samples
+
+    samples = struct.unpack(f'{n_frames}h', raw[:n_frames * 2])
+    bucket = max(1, n_frames // num_samples)
+    waveform = []
+    for i in range(num_samples):
+        start = i * bucket
+        end = min(start + bucket, n_frames)
+        if start < n_frames:
+            chunk = [abs(s) for s in samples[start:end]]
+            waveform.append(max(chunk) / 32768.0 if chunk else 0.0)
+        else:
+            waveform.append(0.0)
+    return waveform
+
+COLOR_GRADE_PRESETS = {
+    'Cinematic Teal & Orange': (
+        'eq=contrast=1.12:saturation=1.25,'
+        'colorbalance=rs=0.08:gs=-0.04:bs=-0.08:rh=-0.08:gh=0.04:bh=0.14'
+    ),
+    'Vintage 70s Warm Film': (
+        'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,'
+        'eq=contrast=1.05:saturation=0.85'
+    ),
+    'B&W Noir (High Contrast)': (
+        'hue=s=0,eq=contrast=1.35:brightness=-0.04'
+    ),
+    'Vibrant Pop / HDR': (
+        'eq=saturation=1.45:contrast=1.15'
+    ),
+    'Cyberpunk / Neon Cool': (
+        'colorbalance=rs=-0.1:gs=-0.05:bs=0.2:rh=0.15:gh=-0.05:bh=0.25,'
+        'eq=saturation=1.3'
+    ),
+}
+
+def apply_color_grade(input_path: str, output_path: str, preset_name: str) -> str:
+    '''Apply a cinematic color grading LUT/filter preset to video.'''
+    if preset_name not in COLOR_GRADE_PRESETS:
+        raise ValueError(f"Unknown preset '{preset_name}'. Choose from: {list(COLOR_GRADE_PRESETS.keys())}")
+
+    vf = COLOR_GRADE_PRESETS[preset_name]
+    args = [
+        '-y', '-i', input_path,
+        '-vf', vf,
+        '-c:v', 'libx264', '-crf', '20',
+        '-c:a', 'copy',
+        output_path
+    ]
+    run_ffmpeg(args)
+    return output_path
+
+def render_clip_sequence(clips: list[dict], output_path: str) -> str:
+    '''
+    Stitch a sequence of video clips with individual In/Out trim markers.
+    clips: [{'path': str, 'start': float (opt), 'end': float (opt)}, ...]
+    '''
+    if not clips:
+        raise ValueError('No clips specified for sequence.')
+    if len(clips) == 1:
+        c = clips[0]
+        st = c.get('start', 0.0) or 0.0
+        en = c.get('end')
+        if en:
+            return trim_video(c['path'], output_path, st, en, reencode=True)
+        else:
+            return convert_video_format(c['path'], output_path)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        temp_files = []
+        for idx, c in enumerate(clips):
+            cp = c['path']
+            st = c.get('start', 0.0) or 0.0
+            en = c.get('end')
+            t_out = os.path.join(td, f'seg_{idx:03d}.mp4')
+            scale_filter = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2'
+            if en and en > st:
+                dur = en - st
+                args = ['-y', '-ss', str(st), '-i', cp, '-t', str(dur),
+                        '-vf', scale_filter,
+                        '-c:v', 'libx264', '-crf', '22', '-r', '30', '-c:a', 'aac', '-ar', '44100', '-ac', '2', t_out]
+            else:
+                args = ['-y', '-i', cp,
+                        '-vf', scale_filter,
+                        '-c:v', 'libx264', '-crf', '22', '-r', '30', '-c:a', 'aac', '-ar', '44100', '-ac', '2', t_out]
+            run_ffmpeg(args)
+            temp_files.append(t_out)
+
+        merge_videos(temp_files, output_path)
+    return output_path
+
