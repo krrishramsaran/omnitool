@@ -142,8 +142,8 @@ run_app.bat
 ## 💻 Installation Guide for Any Windows PC
 
 ### Option 1: Standalone Application (.exe) — No Python Needed!
-1. Go to the [Releases Page](https://github.com/krrishramsaran/omnitool/releases/tag/v1.0.0).
-2. Download **`OmniTool-v1.0.0-Windows.zip`**.
+1. Go to the [Releases Page](https://github.com/krrishramsaran/omnitool/releases/latest).
+2. Download **`OmniTool-v1.1.0-Windows.zip`**.
 3. Extract the folder and directly double-click:
    ```cmd
    OmniTool.exe
@@ -151,13 +151,13 @@ run_app.bat
    *No Python installation or terminal setup required.*
 
 ### Option 2: Run with Launcher Script
-1. Download **`OmniTool-Windows.zip`** from [Releases](https://github.com/krrishramsaran/omnitool/releases).
+1. Download **`OmniTool-Windows.zip`** from [Latest Releases](https://github.com/krrishramsaran/omnitool/releases/latest).
 2. Extract the folder and double-click:
    ```cmd
    run_app.bat
    ```
 
-### Option 2: Clone with Git
+### Option 3: Clone with Git
 ```powershell
 # Clone the repository
 git clone https://github.com/krrishramsaran/omnitool.git
@@ -169,7 +169,7 @@ cd omnitool
 run_app.bat
 ```
 
-### Option 3: Manual Developer Setup
+### Option 4: Manual Developer Setup
 ```powershell
 # 1. Create a virtual environment
 python -m venv .venv
